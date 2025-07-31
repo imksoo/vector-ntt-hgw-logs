@@ -1,0 +1,68 @@
+sources:
+  api_fetch:
+    type: http_client
+    endpoint: 'http://${NTT_HGW_ADDRESS}/index.cgi/system_tel.log'
+    method: GET
+    scrape_interval_secs: 60
+    scrape_timeout_secs: 10
+    auth:
+      strategy: basic
+      user: "${NTT_HGW_USERNAME}"
+      password: "${NTT_HGW_PASSWORD}"
+    framing:
+      method: character_delimited
+      character_delimited:
+        delimiter: "\n"
+        max_length: 100000
+    decoding:
+      codec: bytes
+transforms:
+  decode:
+    type: remap
+    inputs:
+      - api_fetch
+    source: |
+      .raw = string!(.message)
+      .message = replace(decode_charset!(.raw, "shift_jis"), r'\r', "")
+      del(.raw)
+  timestampize:
+    type: remap
+    inputs:
+      - decode
+    source: |
+      log = parse_regex!(.message, r'^(?P<time>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})')
+      parsed = parse_timestamp!(log.time, format: "%Y-%m-%d %H:%M:%S", timezone: "Asia/Tokyo")
+      .timestamp = parsed
+  deduper:
+    type: dedupe
+    inputs:
+      - timestampize
+    fields:
+      match:
+        - message
+sinks:
+  stdout:
+    type: console
+    inputs:
+      - deduper
+    target: stdout
+    encoding:
+      codec: json
+      json:
+        pretty: true
+  openobserve:
+    type: http
+    inputs:
+      - deduper
+    uri: "http://openobserve:5080/api/${O2_ORGNAME}/ntt_hgw_system_tel/_json"
+    method: post
+    auth:
+      strategy: basic
+      user: "${O2_USER}"
+      password: "${O2_PASSWORD}"
+    compression: gzip
+    encoding:
+      codec: json
+      timestamp_format: rfc3339
+    healthcheck:
+      enabled: false
